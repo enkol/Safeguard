@@ -273,7 +273,7 @@ namespace Safeguard
             FileInfo source = new FileInfo(_savesPath);
 
             int diff = Convert.ToInt32((source.LastWriteTime - _lastBackups[savegame]).TotalSeconds);
-            if (diff > _backupDelayInSeconds)
+            if (!(diff > _backupDelayInSeconds))
             {
                 return true;
             }
