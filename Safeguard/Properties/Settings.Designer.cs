@@ -39,7 +39,7 @@ namespace Safeguard.Properties {
         
         [global::System.Configuration.ApplicationScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("300")]
+        [global::System.Configuration.DefaultSettingValueAttribute("30")]
         public int MinTimeDiffInSeconds {
             get {
                 return ((int)(this["MinTimeDiffInSeconds"]));
@@ -52,6 +52,15 @@ namespace Safeguard.Properties {
         public int BackupDelayInSeconds {
             get {
                 return ((int)(this["BackupDelayInSeconds"]));
+            }
+        }
+        
+        [global::System.Configuration.ApplicationScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool IgnoreMinTimeDiffOnClose {
+            get {
+                return ((bool)(this["IgnoreMinTimeDiffOnClose"]));
             }
         }
     }

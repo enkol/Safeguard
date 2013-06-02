@@ -17,7 +17,7 @@ namespace Safeguard
         private enum CleanupState
         {
             Init,
-            Pending,
+            None,
             Initiated,
             Running,
             Finished
@@ -32,8 +32,8 @@ namespace Safeguard
         [Flags()]
         private enum JobType
         {
-            Backup = 0x0,
-            Cleanup = 0x1
+            Backup = 0x1,
+            Cleanup = 0x2
         }
 
         private class Work
@@ -69,7 +69,7 @@ namespace Safeguard
         private int _backupDelayInSeconds;
         private int _maxNumberOfBackups;
         private int _minTimeDiffInSeconds;
-        private IDictionary<string, DateTime> _lastBackups = null;
+        private IDictionary<string, string> _lastBackups = null;
         private System.Windows.Forms.Timer _backupTimer = null;
         private string _backupSavegame = null;
 
@@ -183,10 +183,10 @@ namespace Safeguard
             }
 
             // Since we have now started the process and are monotoring it, remember to check for necessary cleanup afterwards
-            _cleanupState = CleanupState.Pending;
+            _cleanupState = CleanupState.None;
 
             // Create backup list
-            _lastBackups = new Dictionary<string, DateTime>();
+            _lastBackups = new Dictionary<string, string>();
 
             // Create timer
             _backupTimer = new System.Windows.Forms.Timer();
@@ -242,6 +242,10 @@ namespace Safeguard
             try
             {
                 handle = processTnS.Handle;
+                if (handle != IntPtr.Zero && processTnS.HasExited)
+                {
+                    handle = IntPtr.Zero;
+                }
             }
             catch (Exception)
             {
@@ -263,7 +267,7 @@ namespace Safeguard
 
         private bool HasLastSavegameBackup(string savegame)
         {
-            if (!_lastBackups.ContainsKey(savegame))
+            if (savegame == null || !_lastBackups.ContainsKey(savegame))
             {
                 // we didn't backuped this save game during the actual session, so we couldn't have backuped the last savegame
                 return false;
@@ -272,8 +276,11 @@ namespace Safeguard
             // Use the saves.sav file last write time as identifier when the last save was performed by Timber and Stone
             FileInfo source = new FileInfo(_savesPath);
 
-            int diff = Convert.ToInt32((source.LastWriteTime - _lastBackups[savegame]).TotalSeconds);
-            if (!(diff > _backupDelayInSeconds))
+            // Compare to backup creation time
+            DirectoryInfo info = new DirectoryInfo(_lastBackups[savegame]);
+            int diff = Convert.ToInt32((source.LastWriteTime - info.CreationTime.AddSeconds(_backupDelayInSeconds * -1)).TotalSeconds);
+            Debug.WriteLine("Diff = " + diff);
+            if (diff >= _backupDelayInSeconds * -1 && diff <= _backupDelayInSeconds)
             {
                 return true;
             }
@@ -281,7 +288,7 @@ namespace Safeguard
             return false;
         }
 
-        private void Cleanup()
+        private bool Cleanup()
         {
             if (_cleanupState == CleanupState.Initiated)
             {
@@ -289,22 +296,32 @@ namespace Safeguard
                 _cleanupState = CleanupState.Running;
                 JobType job = JobType.Cleanup;
 
-                // If there is a backup in the pipeline do it now
-                // Also check if we backuped the last savegame to ensure always backup the last savegame of a playsession
-                if (_backupTimer.Enabled || !HasLastSavegameBackup(_backupSavegame))
+                // If there is a backup in the pipeline stop it's timer, we will ensure anyways to backup the last savegame, which in this case will be this one
+                _backupTimer.Stop();
+
+                // Check if we backuped the last savegame to ensure always backup the last savegame of a playsession
+                if (_backupSavegame != null && !HasLastSavegameBackup(_backupSavegame))
                 {
-                    _backupTimer.Stop();
-                    job |= JobType.Backup;
+                    // Do a backup depending on settings and time frame
+                    if (Properties.Settings.Default.IgnoreMinTimeDiffOnClose || !BackupRecentlyPerformed(_backupSavegame))
+                    {
+                        Debug.WriteLine("cleanup with backup");
+                        job |= JobType.Backup;
+                    }
                 }
 
                 // let's roll
                 backgroundWorkerTnS.RunWorkerAsync(new Work(job, _backupSavegame));
+
+                return true;
             }
+            return false;
         }
 
         private void processTnS_Exited(object sender, EventArgs e)
         {
             // Timber and Stone was closed, so we close also
+            Debug.WriteLine("processTnS_Exited " + _cleanupState.ToString());
             if (_cleanupState != CleanupState.Running)
             {
                 _cleanupState = CleanupState.Initiated;
@@ -339,8 +356,8 @@ namespace Safeguard
             {
                 return;
             }
-            // If there is a backup running, let it finish
-            else if (_backupState == BackupState.Running)
+            // If there is a backup running, let it finish if we are not in cleanup process
+            else if (_backupState == BackupState.Running && _cleanupState == CleanupState.None)
             {
                 e.Cancel = true;
             }
@@ -354,7 +371,7 @@ namespace Safeguard
                 }
                 else if (_cleanupState == CleanupState.Running)
                 {
-                    labelStatus.Text = "Cancelling cleanup...";
+                    labelStatus.Text = "Canceling cleanup...";
                     buttonCancel.Enabled = false;
                     Application.DoEvents();
                     backgroundWorkerTnS.CancelAsync();
@@ -373,9 +390,7 @@ namespace Safeguard
                 processTnS.EnableRaisingEvents = false;
 
                 // Do pending cleanup work, if necessary
-                this.Cleanup();
-
-                e.Cancel = true;
+                e.Cancel = this.Cleanup();
             }
         }
 
@@ -402,7 +417,14 @@ namespace Safeguard
         private void OnTimerTick(object sender, EventArgs e)
         {
             _backupTimer.Stop();
-            RunBackup();
+
+            Debug.WriteLine("Tick " + _cleanupState.ToString());
+
+            // Only run backup if we are not involved in a cleanup
+            if (_cleanupState == CleanupState.None)
+            {
+                RunBackup();
+            }
         }
 
         private void backgroundWorkerTnS_DoWork(object sender, DoWorkEventArgs e)
@@ -414,14 +436,15 @@ namespace Safeguard
                 return;
             }
 
+            Debug.WriteLine("DoWork " + work.Target);
             try 
 	        {	
-		        string destinationFolder = Path.Combine(_backupFolder, work.Target);
-
-                if ((work.Job & JobType.Backup) == JobType.Backup)
+                if ((work.Job & JobType.Backup) == JobType.Backup && work.Target != null)
                 {
+                    Debug.WriteLine("DoWork Backup");
                     // Copy all files in this new/updated savegame to our backup directory
 
+                    string destinationFolder = Path.Combine(_backupFolder, work.Target);
                     string sourceFolder = Path.Combine(_saveFolder, work.Target);
                     Directory.CreateDirectory(destinationFolder);
 
@@ -444,9 +467,13 @@ namespace Safeguard
                             fileInfo.CopyTo(target, true);
                         }
                     }
+
+                    // remember that we did a backup
+                    _lastBackups[work.Target] = folder;
                 }
                 if ((work.Job & JobType.Cleanup) == JobType.Cleanup)
                 {
+                    Debug.WriteLine("DoWork Cleanup");
                     // Loop through all backups and delete the oldest ones if the maximum backup limit was exceeded
 
                     if (Directory.Exists(_backupFolder))
@@ -493,9 +520,9 @@ namespace Safeguard
             {
                 labelStatus.Text = "Monotoring Timber and Stone...";
                 _backupState = BackupState.Idle;
-                _cleanupState = CleanupState.Pending;
+                _cleanupState = CleanupState.None;
             }
-            else if (work.Job == JobType.Cleanup)
+            else if ((work.Job & JobType.Cleanup) == JobType.Cleanup)
             {
                 labelStatus.Text = "Closing...";
                 _cleanupState = CleanupState.Finished;
@@ -557,21 +584,30 @@ namespace Safeguard
 
         private bool BackupRecentlyPerformed(string savegame, int timeDiff = -1)
         {
-            if (_lastBackups.ContainsKey(savegame))
+            if (savegame != null && _lastBackups.ContainsKey(savegame))
             {
-                // Check if it's about time to backup this savegame
-                int diff = Convert.ToInt32((DateTime.Now - _lastBackups[savegame]).TotalSeconds);
+                try 
+                {	        
+		            // Check if it's about time to backup this savegame
+                    DirectoryInfo info = new DirectoryInfo(_lastBackups[savegame]);
+                    int diff = Convert.ToInt32((DateTime.Now - info.CreationTime).TotalSeconds);
                 
-                if (timeDiff < 0)
-                {
-                    timeDiff = _minTimeDiffInSeconds;
-                }
+                    if (timeDiff < 0)
+                    {
+                        timeDiff = _minTimeDiffInSeconds;
+                    }
 
-                if (diff < timeDiff)
-                {
-                    // jupp, a backup of this savegame was done within the backup time frame
-                    return true;
+                    if (diff < timeDiff)
+                    {
+                        // jupp, a backup of this savegame was done within the backup time frame
+                        return true;
+                    }
                 }
+                catch (Exception)
+                {
+                    return false;
+                }
+                
             }
             return false;
         }
@@ -591,7 +627,6 @@ namespace Safeguard
             }
 
             // init backup and start timer
-            _lastBackups[savegame] = DateTime.Now;
             _backupState = BackupState.Running;
             _backupSavegame = savegame;
             if (delayed)
