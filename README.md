@@ -15,3 +15,8 @@ Also there is a minimum time span between backups of 5 minutes.
 Expirienced users may take a look in the .config file to change these default values.
 
 To restore one of the backups you have to copy the *.sav files back to the original savegame folder. Feel free to ask for a detailed explanation, if needed.
+
+Requirements
+============
+
+.Net Framework 2.0 or higher.
